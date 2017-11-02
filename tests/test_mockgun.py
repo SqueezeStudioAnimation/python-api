@@ -322,6 +322,37 @@ class TestMultiEntityFieldComparison(TestBaseWithExceptionTests):
             self.assertTrue(len(item["users"]) > 0)
 
 
+class TestFindName(TestBaseWithExceptionTests):
+    """
+    Ensure that the 'name' field for entity_field is returned.
+    This is the default behavior on a real Shotgun server.
+    """
+
+    def setUp(self):
+        self._mockgun = Mockgun("https://test.shotgunstudio.com", login="user", password="1234")
+
+        self._project1 = self._mockgun.create("Project", {"name": "project1"})
+        self._shot1 = self._mockgun.create("Shot", {"code": "shot1", "project": self._project1})
+        self._sequence1 = self._mockgun.create("Sequence", {"code": "sequence1", "project": self._project1, "shots": [self._shot1]})
+
+    def test_entity_field(self):
+        """
+        Ensure the 'name' field is returned on entity field.
+        """
+        item = self._mockgun.find_one("Shot", [], ["project"])
+        self.assertTrue("name" in item["project"])
+        self.assertEqual(self._project1["name"], item["project"]["name"])
+
+    def test_multi_entity_field(self):
+        """
+        Ensure the 'name' field is returned on multi entity field.
+        """
+        item = self._mockgun.find_one("Sequence", [], ["shots"])
+        self.assertTrue(len(item["shots"]) > 0)
+        self.assertTrue("name" in item["shots"][0])
+        self.assertEqual(self._shot1["code"], item["shots"][0]["name"])
+
+
 class TestFindFields(TestBaseWithExceptionTests):
     """
     Ensure that using the 'field' argument in the find method work.

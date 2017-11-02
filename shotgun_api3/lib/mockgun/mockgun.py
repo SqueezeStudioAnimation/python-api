@@ -114,6 +114,7 @@ Below is a non-exhaustive list of things that we still need to implement:
 
 """
 
+import copy
 import datetime
 
 from ... import sg_timezone, ShotgunError
@@ -302,6 +303,9 @@ class Shotgun(object):
 
         # Extract fields from row
         val = [dict((field, self._get_field_from_row(entity_type, row, field)) for field in all_fields) for row in results]
+
+        # Add the special 'name' field on the entity and multi-entity values.
+        val = [dict((field_name, self._handle_name_field(field_value)) for field_name, field_value in item.iteritems()) for item in val]
 
         # Handle the ordering of the result after we requested additional fields from results.
         if order:
@@ -680,6 +684,48 @@ class Shotgun(object):
                 # sg returns none for unknown stuff
                 return None
 
+    def _handle_name_field(self, val):
+        """
+        Inject the 'name' field if missing.
+        This is used to reproduce the default shotgun behavior when returning entity fields from find().
+        Example:
+        >>> sg.find_one('Task', [['project', 'is_not', None]], ['project'])
+        {'project': {'type': 'Project', 'id': 65, 'name': 'Demo Animation Project'}, 'type': 'Task', 'id': 156}
+        """
+        # Here are the fields that can be used to create the 'name' field
+        source_field_names = (
+            'name',  # ex: Project entity
+            'code',  # ex: Shot entity
+            'content',  # ex: Task entity
+        )
+
+        if isinstance(val, list):  # list of entity
+            return [self._handle_name_field(item) for item in val]
+        elif isinstance(val, dict) and "type" in val and "id" in val:  # entity
+            if not "name" in val:
+                entity_type = val["type"]
+                entity_id = val["id"]
+
+                val = copy.copy(val)  # ensure we do not modify the database by accident
+                row = self._db[entity_type][entity_id]
+
+                # Resolve the value associated with the field
+                for field_name in source_field_names:
+                    try:
+                        field_value = row[field_name]
+                    except LookupError:
+                        continue
+                    val["name"] = field_value
+                    break
+
+                if not "name" in val:
+                    raise ShotgunError("Cannot resolve name field from {0} #{1}: {2}".format(
+                        entity_type, entity_id, row
+                    ))
+            return val
+        else:
+            return val
+
     def _get_field_type(self, entity_type, field):
         # split dotted form fields
         try:
@@ -797,7 +843,3 @@ class Shotgun(object):
     def _validate_entity_exists(self, entity_type, entity_id):
         if entity_id not in self._db[entity_type]:
             raise ShotgunError("No entity of type %s exists with id %s" % (entity_type, entity_id))
-
-
-
-
