@@ -218,9 +218,12 @@ class Shotgun(object):
 
         self.finds = 0
 
+        self._current_user = None
     ###################################################################################################
     # public API methods
-
+    def set_current_user(self, sg_user):
+        # Used to fill the 'created_by' field automatically.
+        self._current_user = sg_user
 
     def schema_read(self):
         return self._schema
@@ -239,7 +242,7 @@ class Shotgun(object):
 
     def schema_field_read(self, entity_type, field_name=None):
         if field_name is None:
-            return self._schema[entity_type]
+            return copy.copy(self._schema[entity_type])  # prevent artifacts
         else:
             return dict((k, v) for k, v in self._schema[entity_type].items() if k == field_name)
 
@@ -349,6 +352,14 @@ class Shotgun(object):
             else:
                 raise ShotgunError("Invalid request type %s in request %s" % (request["request_type"], request))
         return results
+    
+    def _get_next_id(self, entity_type):
+        try:
+            # get next id in this table
+            next_id = max(self._db[entity_type]) + 1
+        except ValueError:
+            next_id = 1
+        return next_id
 
     def create(self, entity_type, data, return_fields=None):
         
@@ -372,12 +383,8 @@ class Shotgun(object):
         self._validate_entity_type(entity_type)
         self._validate_entity_data(entity_type, data)
         self._validate_entity_fields(entity_type, return_fields)
-        try:
-            # get next id in this table
-            next_id = max(self._db[entity_type]) + 1
-        except ValueError:
-            next_id = 1
-        
+
+        next_id = self._get_next_id(entity_type)
         row = self._get_new_row(entity_type)
         
         self._update_row(entity_type, row, data)
@@ -389,6 +396,29 @@ class Shotgun(object):
         
         self._db[entity_type][next_id] = row
         
+        # Create EventLogEntries
+        if entity_type != 'EventLogEntry':  # prevent infinite loop
+            self.create('EventLogEntry', {
+                'event_type': 'Shotgun_{0}_New'.format(entity_type),
+                'entity': {'type': entity_type, 'id': next_id},
+                'meta': {'entity_id': next_id, 'entity_type': entity_type, 'type': 'new_entity'},
+                # todo: add project
+            })
+            # {'attribute_name': None,
+            # 'cached_display_name': None,
+            # 'created_at': datetime.datetime(2017, 5, 16, 8, 26, 46, tzinfo=<tank_vendor.shotgun_api3.lib.sgtimezone.LocalTimezone object at 0x2d440d0>),
+            # 'description': 'Gabrielle Gagnon created new Asset ',
+            # 'entity': None,
+            # 'event_type': 'Shotgun_Asset_New',
+            # 'filmstrip_image': None,
+            # 'id': 56534670,
+            # 'image': None,
+            # 'meta': {'entity_id': 4352, 'entity_type': 'Asset', 'type': 'new_entity'},
+            # 'project': {'id': 339, 'name': 'Lynx-RushOfJustice', 'type': 'Project'},
+            # 'session_uuid': 'dacd1664-3a32-11e7-97b8-0242ac110004',
+            # 'type': 'EventLogEntry',
+            # 'user': {'id': 152, 'name': 'Gabrielle Gagnon', 'type': 'HumanUser'}}
+
         if return_fields is None:
             result = dict((field, self._get_field_from_row(entity_type, row, field)) for field in data)
         else:
@@ -490,6 +520,7 @@ class Shotgun(object):
                                    "date_time": datetime.datetime,
                                    "list": basestring,
                                    "status_list": basestring,
+                                   "color": basestring,
                                    "url": dict}[sg_type]
                 except KeyError:
                     raise ShotgunError("Field %s.%s: Handling for Shotgun type %s is not implemented" % (entity_type, field, sg_type)) 
@@ -727,6 +758,9 @@ class Shotgun(object):
             return val
 
     def _get_field_type(self, entity_type, field):
+        # The 'id' field is not included in the schema???
+        if field == 'id':
+            return 'number'
         # split dotted form fields
         try:
             field2, entity_type2, field3 = field.split(".", 2)
@@ -828,17 +862,63 @@ class Shotgun(object):
         else:
             raise ShotgunError("%s is not a valid filter operator" % filter_operator)
 
+    def _create_event_attribute_change(self, entity, attr_name, old_val, new_val):
+        # {'attribute_name': 'color',
+        #  'cached_display_name': None,
+        #  'created_at': datetime.datetime(2017, 5, 16, 8, 25, 3, tzinfo=<tank_vendor.shotgun_api3.lib.sgtimezone.LocalTimezone object at 0x210f050>),
+        #  'description': 'Gabrielle Gagnon changed "Gantt Bar Color" from "" to "pipeline_step" on Task LegoDirecting',
+        #  'entity': None,
+        #  'event_type': 'Shotgun_Task_Change',
+        #  'filmstrip_image': None,
+        #  'id': 56534551,
+        #  'image': None,
+        #  'meta': {'attribute_name': 'color',
+        #           'entity_id': 73747,
+        #           'entity_type': 'Task',
+        #           'field_data_type': 'color',
+        #           'in_create': True,
+        #           'new_value': 'pipeline_step',
+        #           'old_value': None,
+        #           'type': 'attribute_change'},
+        #  'project': {'id': 342, 'name': 'Lego-LegoCity', 'type': 'Project'},
+        #  'session_uuid': '94a8057c-3a32-11e7-97b8-0242ac110004',
+        #  'type': 'EventLogEntry',
+        #  'user': {'id': 152, 'name': 'Gabrielle Gagnon', 'type': 'HumanUser'}}
+
+        self.create('EventLogEntry', {
+            'attribute_name': attr_name,
+            # 'description': '{0} changed "{1}" from "{2}" to "{3}" on {4} {5}'.format(
+            #     'MockedUser', attr_name, old_val, new_val, entity['type'], entity['name']
+            # ),
+            'entity': {'type': entity['type'], 'id': entity['id']},
+            'event_type': 'Shotgun_{0}_Change'.format(entity['type']),
+            'meta': {
+                'attribute_name': attr_name,
+                'entity_id': entity['id'],
+                'entity_type': entity['type'],
+                # 'field_data_type': # todo
+                # 'in_create':  # todo
+                'new_value': new_val,
+                'old_value': old_val,
+                'type': 'attribute_change'
+            },
+            # 'project': # todo
+            'user': self._current_user,
+        })
 
     def _update_row(self, entity_type, row, data):
         for field in data:
             field_type = self._get_field_type(entity_type, field)
+            old_val = row[field]
             if field_type == "entity" and data[field]:
-                row[field] = {"type": data[field]["type"], "id": data[field]["id"]}
+                new_val = {"type": data[field]["type"], "id": data[field]["id"]}
             elif field_type == "multi_entity":
-                row[field] = [{"type": item["type"], "id": item["id"]} for item in data[field]]
+                new_val = [{"type": item["type"], "id": item["id"]} for item in data[field]]
             else:
-                row[field] = data[field]
-            
+                new_val = data[field]
+            row[field] = new_val
+            if entity_type != 'EventLogEntry':
+                self._create_event_attribute_change(row, field, old_val, new_val)
 
     def _validate_entity_exists(self, entity_type, entity_id):
         if entity_id not in self._db[entity_type]:
