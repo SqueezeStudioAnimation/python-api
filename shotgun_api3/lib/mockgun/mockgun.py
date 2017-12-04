@@ -384,11 +384,12 @@ class Shotgun(object):
         self._validate_entity_data(entity_type, data)
         self._validate_entity_fields(entity_type, return_fields)
 
-        next_id = self._get_next_id(entity_type)
         row = self._get_new_row(entity_type)
+        next_id = self._get_next_id(entity_type)
+        row["id"] = next_id
         
         self._update_row(entity_type, row, data)
-        row["id"] = next_id
+        
 
         # created_at can be set by a shotgun.create call, only set it automatically if not previously set.
         if row["created_at"] is None:
@@ -429,13 +430,13 @@ class Shotgun(object):
         
         return result
 
-    def update(self, entity_type, entity_id, data):
+    def update(self, entity_type, entity_id, data, multi_entity_update_modes=None):
         self._validate_entity_type(entity_type)
         self._validate_entity_data(entity_type, data)
         self._validate_entity_exists(entity_type, entity_id)
 
         row = self._db[entity_type][entity_id]
-        self._update_row(entity_type, row, data)
+        self._update_row(entity_type, row, data, multi_entity_update_modes)
 
         return [dict((field, item) for field, item in row.items() if field in data or field in ("type", "id"))]
 
@@ -733,7 +734,7 @@ class Shotgun(object):
         if isinstance(val, list):  # list of entity
             return [self._handle_name_field(item) for item in val]
         elif isinstance(val, dict) and "type" in val and "id" in val:  # entity
-            if not "name" in val:
+            if "name" not in val:
                 entity_type = val["type"]
                 entity_id = val["id"]
 
@@ -749,7 +750,7 @@ class Shotgun(object):
                     val["name"] = field_value
                     break
 
-                if not "name" in val:
+                if "name" not in val:
                     raise ShotgunError("Cannot resolve name field from {0} #{1}: {2}".format(
                         entity_type, entity_id, row
                     ))
@@ -906,14 +907,36 @@ class Shotgun(object):
             'user': self._current_user,
         })
 
-    def _update_row(self, entity_type, row, data):
+    def _is_entity_in_list(self, entity, list_):
+        """
+        Utility method that check if an entity is in a multi-entity list.
+        It only check the type and id, which is useful if we have other fields like 'name' in our values.
+        """
+        for entry in list_:
+            if entry["type"] == entity["type"] and entry["id"] == entity["id"]:
+                return True
+        return False
+
+    def _update_row(self, entity_type, row, data, multi_entity_update_modes=None):
         for field in data:
             field_type = self._get_field_type(entity_type, field)
             old_val = row[field]
             if field_type == "entity" and data[field]:
                 new_val = {"type": data[field]["type"], "id": data[field]["id"]}
             elif field_type == "multi_entity":
-                new_val = [{"type": item["type"], "id": item["id"]} for item in data[field]]
+                update_mode = multi_entity_update_modes.get(entity_type, "set") if multi_entity_update_modes is not None else "set"
+                if update_mode == 'set':
+                    new_val = [{"type": item["type"], "id": item["id"]} for item in data[field]]
+                elif update_mode == 'add':
+                    new_val = copy.copy(row[field])
+                    for item in data[field]:
+                        if not self._is_entity_in_list(item, new_val):
+                            new_val.append({"type": item["type"], "id": item["id"]})
+                elif update_mode == "remove":
+                    entities_to_remove = data[field]
+                    new_val = [item for item in row[field] if not self._is_entity_in_list(item, entities_to_remove)]
+                else:
+                    raise Exception("Unsupported update_mode {0}".format(update_mode))
             else:
                 new_val = data[field]
             row[field] = new_val
