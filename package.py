@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 name = 'shotgun_api3'
 
-version = '3.0.34r2'
+version = '3.0.34r3'
 
 description = 'A Python-based API for accessing Shotgun and integrating with other tools'
 
