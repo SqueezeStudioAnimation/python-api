@@ -387,16 +387,15 @@ class Shotgun(object):
         row = self._get_new_row(entity_type)
         next_id = self._get_next_id(entity_type)
         row["id"] = next_id
-        
+
         self._update_row(entity_type, row, data)
-        
 
         # created_at can be set by a shotgun.create call, only set it automatically if not previously set.
-        if row["created_at"] is None:
+        if row.get("created_at") is None:
             row["created_at"] = datetime.datetime.now()
-        
+
         self._db[entity_type][next_id] = row
-        
+
         # Create EventLogEntries
         if entity_type != 'EventLogEntry':  # prevent infinite loop
             self.create('EventLogEntry', {
